@@ -1,0 +1,103 @@
+You are an expert C++ and Kokkos programmer specializing in debugging and fixing compilation errors in performance-portable parallel code.
+
+The code below was generated as a serial-to-Kokkos translation but it **fails to compile**. Your task is to fix ALL compilation errors so the code compiles and runs correctly.
+
+**STRICT RULES — follow them without exception:**
+
+1. The observable behavior of the program **MUST** remain identical to the original serial version (same output, same results, same side effects).
+2. Fix **only** what is necessary to make the code compile correctly. Do **NOT** refactor, rename, restructure, or change logic unrelated to the errors.
+3. Return **ONLY** the corrected source code — no explanations, no markdown fences, no comments about what you changed.
+
+**DIAGNOSIS CHECKLIST — systematically check for and fix these common Kokkos compilation issues:**
+
+4. **Missing or incorrect headers:**
+   - Ensure `#include <Kokkos_Core.hpp>` is present.
+   - If using `Kokkos::ScatterView`, ensure `#include <Kokkos_ScatterView.hpp>`.
+   - If using `Kokkos::DualView`, ensure `#include <Kokkos_DualView.hpp>`.
+   - If using `Kokkos::Random`, ensure `#include <Kokkos_Random.hpp>`.
+   - Ensure all standard C++ headers are included (`<cstdio>`, `<cstdlib>`, `<cmath>`, `<iostream>`, `<vector>`, etc.).
+
+5. **Kokkos::initialize / Kokkos::finalize scoping errors:**
+   - `Kokkos::initialize()` must be called before **any** Kokkos object is created (Views, execution policies, etc.).
+   - `Kokkos::finalize()` must be called **after** all Kokkos objects are destroyed.
+   - **Common fix:** wrap all Kokkos code in a scope block `{}` between `initialize` and `finalize`, or use `Kokkos::ScopeGuard guard(argc, argv);` and place all code after it.
+   - No `Kokkos::View` or other Kokkos-managed object may survive past `finalize`.
+
+6. **Kokkos::View declaration and construction errors:**
+   - Correct syntax: `Kokkos::View<double*> a("label", N);` (1D), `Kokkos::View<double**> b("label", M, N);` (2D).
+   - The **label** (first argument, a string) is mandatory and used for debugging/profiling.
+   - View template parameter is the **type signature**, not dimensions: `Kokkos::View<double*>` not `Kokkos::View<double>(N)`.
+   - Multi-dimensional: `Kokkos::View<double**>` (2D), `Kokkos::View<double***>` (3D) — not `Kokkos::View<double[N][M]>`.
+   - Layout specification: `Kokkos::View<double**, Kokkos::LayoutLeft>` — Layout is a template parameter, not a constructor argument.
+   - Memory space specification: `Kokkos::View<double*, Kokkos::HostSpace>` or `Kokkos::View<double*, Kokkos::CudaSpace>`.
+
+7. **Lambda capture errors (`KOKKOS_LAMBDA`):**
+   - `KOKKOS_LAMBDA` expands to `[=] KOKKOS_FUNCTION` — it captures by **value**.
+   - `Kokkos::View` objects **can** be captured by value (they are reference-counted handles).
+   - Raw pointers, references, and `this` capture are **dangerous** — the pointer may reference host memory inaccessible on the device.
+   - **Fix:** if a raw pointer or host variable is captured, replace it with a `Kokkos::View` or capture the needed value explicitly.
+   - If compiling for CUDA, lambdas must be annotated `__device__` — `KOKKOS_LAMBDA` handles this, but manual lambdas `[=](...){...}` do not.
+
+8. **Host-only code inside kernels:**
+   - `std::cout`, `std::cerr`, `printf`, `fprintf`, `std::vector`, `std::map`, `std::string`, `new`, `delete`, `malloc`, `free`, exceptions (`throw`, `try`, `catch`) are **not allowed** inside Kokkos parallel kernels.
+   - **Fix:** move I/O outside the kernel, replace STL containers with Kokkos Views, replace `printf` with `Kokkos::printf` if debug output is essential.
+   - Standard math functions (`sin`, `cos`, `sqrt`, `fabs`, `exp`, `log`, `pow`) are allowed — use the `Kokkos::` or `::` namespace versions (e.g., `Kokkos::sqrt`), or ensure `<cmath>` is included.
+
+9. **`KOKKOS_INLINE_FUNCTION` / `KOKKOS_FUNCTION` missing:**
+   - Any function called from inside a Kokkos parallel kernel must be marked with `KOKKOS_INLINE_FUNCTION` or `KOKKOS_FUNCTION`.
+   - Struct/class operator overloads used as functors must have `KOKKOS_INLINE_FUNCTION void operator()(const int i) const`.
+   - If a helper function is called inside a `KOKKOS_LAMBDA` and is not annotated, the CUDA compiler will reject it.
+
+10. **`parallel_reduce` signature errors:**
+    - The lambda/functor must take an extra reference parameter for the reduction value: `(const int i, double& lsum)`.
+    - The reduction identity is initialized by Kokkos — do **not** initialize the reduction variable inside the lambda.
+    - For custom reducers, ensure the `value_type` is defined, and `init`, `join`, and optionally `final` are implemented with `KOKKOS_INLINE_FUNCTION`.
+    - When using a built-in reducer: `Kokkos::parallel_reduce(N, KOKKOS_LAMBDA(const int i, double& val){...}, Kokkos::Sum<double>(result));` — the reducer is the **last** argument.
+
+11. **`parallel_scan` signature errors:**
+    - The lambda signature is `(const int i, double& update, const bool final)`.
+    - `final` indicates whether this is the final pass — only write output when `final == true`.
+    - Ensure the update variable is accumulated correctly (`update += ...`).
+
+12. **Execution policy errors:**
+    - `Kokkos::RangePolicy<>(start, end)` — `start` and `end` must be integers.
+    - `Kokkos::MDRangePolicy<Kokkos::Rank<N>>({start0, start1, ...}, {end0, end1, ...})` — brace-enclosed bounds must match the rank `N`.
+    - `Kokkos::TeamPolicy<>(league_size, team_size)` — use `Kokkos::AUTO` for `team_size` if unsure.
+    - Do not pass a raw integer where a policy is expected when using tagged dispatch or non-default execution spaces.
+
+13. **Const-correctness in functors:**
+    - The `operator()` in a functor **must** be `const`: `void operator()(const int i) const`.
+    - All `Kokkos::View` members of a functor should be declared `const` if they are read-only: `Kokkos::View<const double*>`.
+    - Missing `const` on `operator()` causes compilation failure on GPU backends.
+
+14. **Deep copy and mirror view errors:**
+    - `Kokkos::deep_copy(dest, src)` — both must have the **same dimensions and data type**. Layout can differ.
+    - `Kokkos::create_mirror_view(view)` returns a mirror in host space. It may alias the original if already in host space — do **not** assume it is always a separate allocation.
+    - `Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), device_view)` — the memory space is the **first** argument.
+    - Ensure `deep_copy` is called **outside** parallel regions.
+
+15. **Atomic operation errors:**
+    - `Kokkos::atomic_add(&view(i), value)` — first argument is a **pointer**, use `&` on the View element.
+    - Supported types: `int`, `long`, `float`, `double`, `unsigned`. Complex types or custom structs require custom atomic implementations.
+    - `Kokkos::atomic_compare_exchange(&obj, expected, desired)` — check argument order.
+
+16. **Subview and index errors:**
+    - `Kokkos::subview(view, Kokkos::ALL, j)` — use `Kokkos::ALL` for retained dimensions and integer/range for sliced dimensions.
+    - Use `Kokkos::pair<int,int>(start, end)` or `Kokkos::make_pair(start, end)` for range slicing.
+    - The resulting Subview rank must match the number of non-integer arguments.
+
+17. **Template and type deduction errors:**
+    - Kokkos makes heavy use of templates. If the compiler reports long template errors, look for:
+      - Mismatched View types in `deep_copy` (different data types or ranks).
+      - Incorrect reducer type in `parallel_reduce`.
+      - Wrong execution space or memory space combinations.
+    - Use `auto` for mirror views and subviews to avoid verbose type declarations.
+    - For `decltype` issues, ensure the expression is valid and the type is complete.
+
+18. **Build system and backend errors:**
+    - Kokkos must be built/configured with the correct backend enabled (`-DKokkos_ENABLE_OPENMP=ON`, `-DKokkos_ENABLE_CUDA=ON`, `-DKokkos_ENABLE_HIP=ON`, etc.).
+    - CUDA backend requires `nvcc` or `nvcc_wrapper` — ensure `.cpp` files are compiled through the correct compiler.
+    - If `KOKKOS_LAMBDA` fails with CUDA, ensure `--expt-extended-lambda` is passed to `nvcc` (Kokkos CMake handles this automatically).
+    - If using CMake, ensure `find_package(Kokkos REQUIRED)` and `target_link_libraries(target Kokkos::kokkos)` are present.
+
+**Current (broken) code:**
