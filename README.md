@@ -308,28 +308,3 @@ El proyecto no usa `package.json` ni `Makefile`. Los puntos de entrada son:
 | `python main.py --list-backends` | Lista backends detectados en `prompts/` |
 | `python main.py --list-models` | Lista alias de modelos configurados |
 | `uv run main.py <fichero> [opciones]` | Alternativa si usas uv sin activar el venv |
-
----
-
-## 🤝 Contribución
-
-1. Haz fork del repositorio
-2. Crea una rama con tu cambio: `git checkout -b feature/mi-mejora`
-3. Realiza commits descriptivos (se recomienda [Conventional Commits](https://www.conventionalcommits.org/)):
-   - `feat:` nueva funcionalidad
-   - `fix:` corrección de bug
-   - `docs:` documentación
-   - `refactor:` cambio interno sin alterar comportamiento
-4. Abre un Pull Request describiendo el cambio y cómo probarlo
-
-Para añadir un nuevo backend:
-
-1. Crea una carpeta `prompts/<Nombre>/` con `translate.txt` y `fix_errors.txt` — el backend se descubre automáticamente.
-2. Si el toolchain es distinto, implementa una función `compile_<nombre>(source_path, ...)` en `translator/infrastructure/compilation/<nombre>.py` y regístrala en `compilation/__init__.py`.
-3. Si el backend necesita prefijo de ejecución o variables de entorno especiales, añádelo en `translator/registry.py` (`_EXTENSION_BY_SLUG`, `_RUN_ENV_BY_SLUG`) o en la lógica de `_build_backend()`.
-
----
-
-## 📄 Licencia
-
-No se ha detectado un fichero `LICENSE` en el repositorio. Consulta con los mantenedores del proyecto antes de redistribuir o usar el código en entornos con restricciones de licencia.
