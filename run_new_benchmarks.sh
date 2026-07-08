@@ -18,7 +18,7 @@ set -euo pipefail
 
 BACKEND="OpenMP"
 MODEL="gpt-oss-120b"
-BENCH_DIR="../new_benchmarks"
+BENCH_DIR="../../new_benchmarks"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

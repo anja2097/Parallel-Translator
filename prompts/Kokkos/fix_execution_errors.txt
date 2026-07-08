@@ -1,0 +1,63 @@
+You are an expert C++ and Kokkos programmer specializing in debugging runtime errors and incorrect results in performance-portable parallel code.
+
+The code below was generated as a serial-to-Kokkos translation. It **compiles successfully** but produces incorrect results at runtime (wrong checksum, segfault, abort, or other runtime failure). Your task is to fix ALL runtime errors so the program executes correctly and produces results identical to the original serial version.
+
+**STRICT RULES — follow them without exception:**
+
+1. The observable behavior of the program **MUST** become identical to the original serial version (same output, same checksum, same results).
+2. Fix **only** what is necessary to correct the runtime behavior. Do **NOT** refactor, rename, restructure, or change logic unrelated to the errors.
+3. Return **ONLY** the corrected source code — no explanations, no markdown fences, no comments about what you changed.
+
+**DIAGNOSIS CHECKLIST — systematically check for and fix these common Kokkos runtime issues:**
+
+4. **Race conditions in `parallel_for` (most common cause of wrong results):**
+   - Multiple threads writing to the same `View` element without atomics is a data race. Use `Kokkos::atomic_add`, `Kokkos::atomic_fetch_add`, or `Kokkos::atomic_compare_exchange` for conflicting writes.
+   - Histogram-style scatter-add patterns (e.g., `bins(index(i)) += value`) require `Kokkos::atomic_add(&bins(index(i)), value)`.
+   - Never write to a non-local View element in a `parallel_for` without atomics unless the access pattern is guaranteed conflict-free.
+
+5. **Out-of-bounds `View` access (segfault / abort):**
+   - Kokkos Views do not perform bounds checking by default. An index computed incorrectly (e.g., off-by-one, wrong stride) silently corrupts memory.
+   - Enable runtime bounds checking by building with `-DKokkos_ENABLE_DEBUG_BOUNDS_CHECK=ON` to diagnose the failing index.
+   - Verify that 2D/3D View indices follow the declared layout: `View<double**>` uses `(row, col)` with LayoutRight (C-order) by default on host.
+   - Subview indices must be within the parent View's range: `Kokkos::subview(v, Kokkos::pair(start, end))` — `end` must be `<= v.extent(0)`.
+
+6. **`parallel_reduce` producing wrong results:**
+   - The reduction lambda signature must be `(const int i, double& lsum)` — the accumulator is the **last** parameter.
+   - Do **not** initialize `lsum` inside the lambda — Kokkos initializes it with the identity value for the chosen reducer.
+   - For custom reducers, verify the `init` method sets the identity value (0 for sum, 1 for product, +∞ for min, -∞ for max).
+   - The result variable passed to `parallel_reduce` must be of the correct type. Passing an `int` where a `double` is expected truncates the result.
+   - `Kokkos::Sum<double>(result)`: `result` must be a `double`, not a `Kokkos::View`.
+
+7. **`deep_copy` missing or out of order:**
+   - After a `parallel_for` or `parallel_reduce` that writes to a device View, call `Kokkos::fence()` before `deep_copy` to ensure all writes are complete.
+   - If a mirror View is used for I/O, ensure `Kokkos::deep_copy(host_mirror, device_view)` is called before reading values from the host mirror.
+   - `deep_copy` from device to host must occur **outside** any parallel region.
+   - Forgetting to `deep_copy` results back to host means the output is read from uninitialized host memory.
+
+8. **Kokkos::initialize / finalize scoping:**
+   - A Kokkos View that outlives `Kokkos::finalize()` causes a use-after-free. Wrap all View declarations and kernel launches in a scope block `{}` placed between `initialize` and `finalize`.
+   - `Kokkos::ScopeGuard guard(argc, argv)` is the recommended pattern — all Kokkos objects must be destroyed before `guard` goes out of scope.
+
+9. **Lambda capture issues (host pointer captured in device kernel):**
+   - A raw pointer or `std::vector::data()` captured in a `KOKKOS_LAMBDA` refers to host memory, which is inaccessible on GPU backends (CUDA/HIP). Replace with a `Kokkos::View` capture.
+   - `this` capture is unsafe in device kernels. Extract needed members into local variables before the lambda.
+   - Large data structures on the stack captured by value in a `KOKKOS_LAMBDA` may overflow register/local memory on GPU. Move to Views.
+
+10. **Execution space mismatch:**
+    - A View in `HostSpace` cannot be accessed inside a `parallel_for` using `Kokkos::DefaultExecutionSpace` (which may be CUDA). Use a device View and `deep_copy`.
+    - `Kokkos::create_mirror_view` returns a host-space copy only if the original is in device space; if already in host space, it returns a reference to the same data. Do not assume it always allocates new memory.
+
+11. **`parallel_scan` final-pass logic:**
+    - The `final` flag in `parallel_scan` indicates whether the current invocation should write the output. Code that always writes (ignoring `final`) produces correct results only by accident and often crashes or gives wrong output.
+    - Pattern: `if (final) output(i) = update;` — only assign to the output array when `final == true`.
+
+12. **Incorrect use of `TeamPolicy` scratch memory:**
+    - Scratch memory requested via `TeamPolicy::set_scratch_size` must not exceed the available per-team scratch space. Requesting too much causes a runtime abort.
+    - Scratch Views constructed inside a team kernel must use the team member's scratch memory handle, not a global allocator.
+
+13. **Floating-point non-determinism:**
+    - Parallel reductions in Kokkos may accumulate values in a different order than the serial version, causing small floating-point differences. If the checksum difference is very small (< `CHECKSUM_RTOL`), this is acceptable. If it is large, the reduction itself is incorrect — check for missing atomic operations or wrong reduction identity.
+
+**Current code:**
+
+**Execution error details:**

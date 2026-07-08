@@ -89,6 +89,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--compare",
+        action="store_true",
+        help=(
+            "Activa verificación de correctitud en bucle: si el checksum del programa "
+            "traducido difiere del serial (o el programa falla en ejecución), reintenta "
+            "con correcciones de errores de ejecución hasta agotar MAX_RETRIES."
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Muestra la respuesta completa de la API de OpenRouter tras cada petición",
@@ -177,6 +186,8 @@ def main() -> None:
         logger.info("  Reasoning:  desactivado")
     if extra_flags:
         logger.info("  Flags comp.: %s", " ".join(extra_flags))
+    if args.compare:
+        logger.info("  Compare:    activado (verificación de checksums en bucle)")
     if args.debug:
         logger.info("  Debug:      activado (respuesta completa de OpenRouter)")
     logger.info("\n")
@@ -190,6 +201,7 @@ def main() -> None:
             thinking=thinking,
             thinking_effort=args.thinking_effort,
             extra_flags=extra_flags,
+            compare=args.compare,
         )
     except TranslatorError as exc:
         print(f"[ERROR] {exc}")

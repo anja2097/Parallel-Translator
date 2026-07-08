@@ -7,7 +7,7 @@ from pathlib import Path
 
 from translator.config.settings import BENCHMARK_RUNS, CHECKSUM_RTOL, EXECUTION_TIMEOUT_SECONDS
 from translator.domain.backend import Backend
-from translator.exceptions import CompilationError
+from translator.exceptions import CompilationError, ExecutionError, ExecutionTimeoutError
 from translator.infrastructure.compilation import compile_file, executable_path
 from translator.infrastructure.execution.output_parser import parse_checksum, parse_stdout_time
 from translator.infrastructure.execution.process import run_once
@@ -76,6 +76,113 @@ def benchmark(
     logger.info("  Resultado: ejecución OK")
     stdout_avg = (stdout_total / runs) if stdout_time_available else None
     return stdout, stderr, wall_total / runs, stdout_avg
+
+
+def run_and_check(
+    original_path: Path,
+    backend: Backend,
+    *,
+    serial_stdout: str,
+    serial_checksum: float | None,
+    extra_flags: list[str] | None = None,
+) -> tuple[bool, str]:
+    """Execute the translated binary once and compare its output against the serial reference.
+
+    This function is designed for the ``--compare`` feedback loop: it runs the translated
+    binary a single time (not benchmarking), captures any runtime failure, and returns a
+    structured error description suitable for feeding back to the LLM.
+
+    Args:
+        original_path: Path to the original serial source file.
+        backend: The active backend.
+        serial_stdout: Captured stdout of the serial reference run.
+        serial_checksum: Pre-parsed checksum from the serial run (or None if absent).
+        extra_flags: Extra compilation/run flags.
+
+    Returns:
+        ``(True, "")`` if the translated binary ran successfully and its output is within
+        tolerance of the serial reference.
+        ``(False, error_description)`` otherwise, where *error_description* contains
+        enough context (exit signal, stderr, checksum values) for the LLM to diagnose the
+        problem.
+    """
+    translated_path = backend.translated_path(original_path)
+    translated_exe = executable_path(translated_path)
+    translated_cmd = backend.run_cmd(translated_exe)
+
+    _log_execute_header(backend.name, translated_cmd, 1, env=backend.run_env())
+
+    try:
+        trans_stdout, trans_stderr, _ = run_once(
+            translated_exe, translated_cmd, env=backend.run_env(),
+        )
+    except ExecutionTimeoutError as exc:
+        error_info = (
+            f"The translated program exceeded the execution timeout "
+            f"({EXECUTION_TIMEOUT_SECONDS} s).\n"
+            f"This usually indicates an infinite loop, excessive computational load, or a "
+            f"deadlock in the parallel code.\n\n"
+            f"Error details:\n{exc}"
+        )
+        logger.info("  Resultado: timeout de ejecución")
+        return False, error_info
+    except ExecutionError as exc:
+        error_info = (
+            f"The translated program crashed at runtime (non-zero exit code).\n"
+            f"Common causes: segmentation fault, stack overflow, assertion failure, "
+            f"MPI error, or unhandled exception.\n\n"
+            f"Error details:\n{exc}"
+        )
+        logger.info("  Resultado: error de ejecución (crash)")
+        return False, error_info
+
+    logger.info("  Resultado: ejecución OK")
+
+    trans_checksum = parse_checksum(trans_stdout)
+
+    if serial_checksum is not None and trans_checksum is not None:
+        denom = max(abs(serial_checksum), 1e-10)
+        rel_diff = abs(serial_checksum - trans_checksum) / denom
+        logger.info("  Checksum serial:     %.6g", serial_checksum)
+        logger.info("  Checksum %-10s %.6g", backend.name, trans_checksum)
+        if rel_diff <= CHECKSUM_RTOL:
+            logger.info(
+                "  Diferencia relativa: %.2e  (dentro de tolerancia %.0e)",
+                rel_diff, CHECKSUM_RTOL,
+            )
+            return True, ""
+        logger.warning(
+            "  Diferencia relativa: %.2e  [AVISO] fuera de tolerancia (%.0e)",
+            rel_diff, CHECKSUM_RTOL,
+        )
+        error_info = (
+            f"The translated program produced an incorrect numerical result.\n"
+            f"The checksum differs from the serial reference beyond the allowed tolerance "
+            f"({CHECKSUM_RTOL:.0e} relative).\n\n"
+            f"Serial checksum:     {serial_checksum:.6g}\n"
+            f"Translated checksum: {trans_checksum:.6g}\n"
+            f"Relative difference: {rel_diff:.2e}\n\n"
+            f"This is typically caused by data races, incorrect reduction operations, "
+            f"uninitialized memory, or incorrect parallelization boundaries."
+        )
+        if trans_stderr:
+            error_info += f"\n\nProgram stderr:\n{trans_stderr}"
+        return False, error_info
+
+    # No checksum available — fall back to exact stdout comparison
+    if serial_stdout == trans_stdout:
+        logger.info("  Salida idéntica (stdout)")
+        return True, ""
+
+    logger.warning("  [AVISO] stdout difiere del serial")
+    error_info = (
+        f"The translated program produced different output than the serial reference.\n\n"
+        f"Expected stdout (serial):\n{serial_stdout!r}\n\n"
+        f"Actual stdout (translated):\n{trans_stdout!r}"
+    )
+    if trans_stderr:
+        error_info += f"\n\nProgram stderr:\n{trans_stderr}"
+    return False, error_info
 
 
 def verify_and_benchmark(
