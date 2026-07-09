@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import NamedTuple
 
-from translator.config.settings import MAX_RETRIES
+from translator.config.settings import API_URL, MAX_RETRIES
 from translator.domain.backend import Backend
 from translator.exceptions import CompilationError, MaxRetriesExhaustedError
 from translator.infrastructure.compilation import compile_file, executable_path
@@ -24,6 +24,7 @@ class LLMConfig(NamedTuple):
     """Parameters forwarded to every chat_completion() call."""
 
     model: str
+    api_url: str = API_URL
     thinking: bool = False
     thinking_effort: str | None = None
 
@@ -87,6 +88,7 @@ def translate_file(
     *,
     backend: Backend,
     model: str,
+    api_url: str = API_URL,
     thinking: bool = False,
     thinking_effort: str | None = None,
     extra_flags: list[str] | None = None,
@@ -126,6 +128,7 @@ def translate_file(
 
     llm_cfg = LLMConfig(
         model=model,
+        api_url=api_url,
         thinking=thinking,
         thinking_effort=thinking_effort,
     )
@@ -136,6 +139,7 @@ def translate_file(
         messages,
         label="Iteración 1 — traducción inicial",
         model=llm_cfg.model,
+        api_url=llm_cfg.api_url,
         thinking=llm_cfg.thinking,
         thinking_effort=llm_cfg.thinking_effort,
     )
@@ -204,6 +208,7 @@ def translate_file(
             messages,
             label=label,
             model=llm_cfg.model,
+            api_url=llm_cfg.api_url,
             thinking=llm_cfg.thinking,
             thinking_effort=llm_cfg.thinking_effort,
         )

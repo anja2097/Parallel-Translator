@@ -1,88 +1,39 @@
-You are an expert C++ and Kokkos programmer specializing in high-performance, performance-portable parallel computing across CPUs and GPUs. Your task is to translate the following serial C/C++ code into an equivalent **maximally optimized** parallel version using the Kokkos programming model.
+You are an expert C++ and Kokkos programmer. Translate the following serial C/C++ code into a maximally optimized parallel Kokkos version.
 
-**STRICT RULES — follow them without exception:**
+**STRICT RULES:**
 
-1. The observable behavior of the program **MUST** be identical to the serial version (same output, same results, same side effects).
-2. Include `#include <Kokkos_Core.hpp>` if it is not already present.
-3. The program must call `Kokkos::initialize()` at the beginning and `Kokkos::finalize()` at the end. Prefer the RAII `Kokkos::ScopeGuard` pattern when possible.
-4. No Kokkos objects (Views, etc.) may exist after `Kokkos::finalize()` — ensure proper scoping.
-5. Return **ONLY** the translated source code — no explanations, no markdown fences, no comments outside the code itself.
+1. Observable behavior MUST be identical to the serial version.
+2. Include `#include <Kokkos_Core.hpp>`.
+3. Use `Kokkos::ScopeGuard` for init/finalize. No Kokkos objects may exist after finalize.
+4. Return ONLY the translated source code — no explanations, no markdown fences.
 
-**OPTIMIZATION MANDATE — apply every applicable Kokkos technique to extract maximum performance:**
+**OPTIMIZATION RULES — apply every applicable technique:**
 
-6. **Execution patterns — choose the right one for each workload:**
-   - `Kokkos::parallel_for` for data-parallel loops with no cross-iteration dependencies.
-   - `Kokkos::parallel_reduce` for accumulation, summation, min/max, and any reduction pattern.
-   - `Kokkos::parallel_scan` for prefix-sum / scan operations.
-   - Do **not** use raw `for` loops for any computationally significant work — always express parallelism through Kokkos patterns.
+5. **Execution patterns:** Use `parallel_for` (no cross-iteration deps), `parallel_reduce` (reductions), `parallel_scan` (prefix sums). Never use raw `for` loops for significant work.
 
-7. **Execution policies — select the optimal policy for each kernel:**
-   - `Kokkos::RangePolicy<>(0, N)` for simple flat 1D loops.
-   - `Kokkos::MDRangePolicy<Kokkos::Rank<N>>` for tightly nested multi-dimensional loops — prefer this over manually flattening indices.
-   - `Kokkos::TeamPolicy` with `TeamThreadRange` and `ThreadVectorRange` for hierarchical parallelism when the workload benefits from team-level cooperation (e.g., reductions over rows of a matrix, irregular inner loops).
-   - Use `team_size` and `vector_length` hints only when there is a clear performance justification; otherwise let Kokkos auto-tune via `Kokkos::AUTO`.
+6. **Execution policies:** Use `RangePolicy` for 1D, `MDRangePolicy<Rank<N>>` for nested multi-dimensional loops, `TeamPolicy` with `TeamThreadRange`/`ThreadVectorRange` for hierarchical parallelism. Use `Kokkos::AUTO` for team/vector sizes unless profiling justifies specific values.
 
-8. **Memory spaces and Views:**
-   - Replace all raw C arrays and `malloc`/`new` allocations with `Kokkos::View<type*>` (1D), `Kokkos::View<type**>` (2D), etc.
-   - Use the default memory space unless there is a reason to be explicit.
-   - Choose the correct **layout** for the target architecture:
-     - `Kokkos::LayoutRight` (row-major) for CPU-friendly access patterns.
-     - `Kokkos::LayoutLeft` (column-major) for GPU-friendly coalesced access.
-     - Prefer `Kokkos::View` defaults (which adapt to the execution space) unless overriding is necessary.
-   - Use `Kokkos::View` with proper rank and dimensions — do not use raw pointers inside kernels.
+7. **Views and memory:** Replace all raw arrays/malloc/new with `Kokkos::View`. Use default memory space and layout (adapts to execution space). Use `LayoutRight` for CPU-friendly, `LayoutLeft` for GPU-friendly access only when overriding is necessary.
 
-9. **Mirror Views and host-device data transfer:**
-   - Use `Kokkos::create_mirror_view` and `Kokkos::deep_copy` for host-device data transfers.
-   - Use `Kokkos::create_mirror_view_and_copy` for convenience when immediate copy is needed.
-   - Minimize host-device transfers — perform as much computation as possible on the device before copying results back.
-   - Use `Kokkos::create_mirror_view` (not `create_mirror`) to avoid unnecessary allocation when execution and host spaces are the same.
+8. **Host-device transfers:** Use `create_mirror_view` + `deep_copy`. Use `create_mirror_view_and_copy` for convenience. Minimize transfers — compute on device, copy results back only when needed.
 
-10. **Reductions:**
-    - Use `Kokkos::parallel_reduce` with the appropriate reducer:
-      - Scalar reduction: lambda with `value +=`, `Kokkos::Sum<T>`, `Kokkos::Prod<T>`.
-      - Min/Max: `Kokkos::Min<T>`, `Kokkos::Max<T>`, `Kokkos::MinMax<T>`.
-      - MinLoc/MaxLoc: `Kokkos::MinLoc<T,int>`, `Kokkos::MaxLoc<T,int>` when the index is also needed.
-      - Multiple simultaneous reductions: use a custom reducer or a struct with `operator+=`.
-    - Never use `Kokkos::atomic_*` as a replacement for a reduction — reductions are always faster.
+9. **Reductions:** Use `parallel_reduce` with built-in reducers (`Sum`, `Min`, `Max`, `MinLoc`, `MaxLoc`, etc.). Never replace reductions with atomics.
 
-11. **Atomics — use sparingly:**
-    - Use `Kokkos::atomic_add`, `Kokkos::atomic_compare_exchange`, etc. **only** when scatter-type updates to shared data structures are unavoidable (e.g., histogram binning, sparse assembly).
-    - Prefer `Kokkos::ScatterView` for scatter-add patterns — it uses thread-private accumulators and avoids atomic contention.
+10. **Atomics and scatter:** Use atomics only when scatter updates are unavoidable. Prefer `Kokkos::ScatterView` for scatter-add patterns.
 
-12. **Memory access optimization:**
-    - Ensure coalesced/contiguous memory access in the innermost parallel dimension.
-    - For multi-dimensional Views, iterate so the fastest-varying index aligns with the parallel dispatch (leftmost index on GPU with `LayoutLeft`, rightmost on CPU with `LayoutRight`).
-    - Use `Kokkos::Subview` instead of copying data subsets.
-    - Avoid strided access patterns that cause cache misses or uncoalesced memory transactions.
+11. **Memory access:** Ensure coalesced access in the innermost parallel dimension. Avoid strided patterns. Use `Kokkos::Subview` instead of copying subsets.
 
-13. **Scratch memory (team-level shared memory):**
-    - For kernels that benefit from shared/local memory (reuse within a team), use `team.team_shmem_size()` and `Kokkos::View` allocated in `Kokkos::MemoryTraits<Kokkos::Unmanaged>` on scratch space.
-    - Request scratch memory via `TeamPolicy::set_scratch_size(level, Kokkos::PerTeam(bytes))` or `Kokkos::PerThread(bytes)`.
-    - Use scratch level 0 (fastest, smallest) for frequently reused data and level 1 for larger scratch needs.
+12. **Scratch memory:** Use team scratch (`set_scratch_size`) for data reused within a team. Level 0 for small/fast, level 1 for larger needs.
 
-14. **Kernel fusion:**
-    - Minimize the number of kernel launches. Fuse consecutive `parallel_for` / `parallel_reduce` calls into a single kernel when data dependencies allow.
-    - Use `Kokkos::fence()` only when synchronization between kernels is strictly necessary (e.g., a write in one kernel is read by the next). Do not add unnecessary fences.
+13. **Kernel fusion:** Minimize kernel launches. Fuse consecutive kernels when dependencies allow. Use `Kokkos::fence()` only when strictly necessary.
 
-15. **Functor vs. Lambda:**
-    - Prefer `KOKKOS_LAMBDA` for simple, short kernels for readability.
-    - Use functors (`KOKKOS_FUNCTION` / `KOKKOS_INLINE_FUNCTION` member operator) for complex kernels, reusable logic, or when explicit `tag` dispatching is needed.
-    - Mark all device-callable functions with `KOKKOS_INLINE_FUNCTION` or `KOKKOS_FUNCTION`.
+14. **Lambdas and functors:** Prefer `KOKKOS_LAMBDA` for short kernels. Use functors with `KOKKOS_INLINE_FUNCTION` for complex/reusable logic. Mark all device-callable functions with `KOKKOS_INLINE_FUNCTION`.
 
-16. **Portability — do not break it:**
-    - Do **not** use raw CUDA, HIP, OpenMP, or architecture-specific intrinsics inside Kokkos kernels.
-    - Do **not** use STL containers, `std::cout`, `printf`, `malloc`, `new`, or any host-only API inside kernels.
-    - Use `Kokkos::printf` for debug output inside kernels if strictly necessary.
-    - All data accessed inside a kernel must reside in a `Kokkos::View` or be captured by value.
+15. **Portability:** No raw CUDA/HIP/OpenMP intrinsics. No STL containers, `std::cout`, `printf`, `malloc`, or `new` inside kernels (use `Kokkos::printf` if needed). All kernel data must reside in Views or be captured by value.
 
-17. **Initialization and I/O:**
-    - Perform all file I/O and `std::cout` output on the host, outside of parallel regions.
-    - Initialize Views on the host using mirror views, then `deep_copy` to the device.
-    - Alternatively, use `Kokkos::parallel_for` on the device to initialize data in parallel when the initialization pattern is computable.
+16. **I/O and init:** File I/O and `std::cout` on host only. Initialize Views via mirror views + deep_copy, or via `parallel_for` on device.
 
-18. **Compile-time configuration:**
-    - Do **not** hardcode execution or memory spaces. Use Kokkos defaults (`Kokkos::DefaultExecutionSpace`, `Kokkos::DefaultHostExecutionSpace`) so the code adapts to the build configuration.
-    - Do **not** hardcode team sizes or vector lengths — use `Kokkos::AUTO` unless profiling shows a specific value is better.
+17. **No hardcoding:** Use default execution/memory spaces. Do not hardcode team sizes or vector lengths.
 
 **Serial code to translate:**
 

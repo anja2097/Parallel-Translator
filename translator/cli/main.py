@@ -9,9 +9,12 @@ from pathlib import Path
 
 from translator.config.env import load_env
 from translator.config.settings import (
+    API_URL,
     DEFAULT_BACKEND_NAME,
     DEFAULT_MODEL,
     ENV_PATH,
+    HF_API_URL,
+    HF_MODELS,
     MODELS,
     THINKING_EFFORTS,
     resolve_model,
@@ -98,9 +101,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--hf",
+        action="store_true",
+        help="Usa Hugging Face Inference API en lugar de OpenRouter",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
-        help="Muestra la respuesta completa de la API de OpenRouter tras cada petición",
+        help="Muestra la respuesta completa de la API tras cada petición",
     )
     return parser
 
@@ -114,12 +122,18 @@ def _print_backends() -> None:
     print()
 
 
-def _print_models() -> None:
-    print("Modelos disponibles:\n")
-    for alias, model_id in sorted(MODELS.items()):
-        default = " (por defecto)" if alias == DEFAULT_MODEL else ""
-        print(f"  {alias:<20} → {model_id}{default}")
-    print("\nTambién puedes pasar el ID completo de OpenRouter con -m/--model.")
+def _print_models(hf: bool = False) -> None:
+    if hf:
+        print("Modelos disponibles (Hugging Face):\n")
+        for alias, model_id in sorted(HF_MODELS.items()):
+            print(f"  {alias:<20} → {model_id}")
+        print("\nTambién puedes pasar el ID completo de Hugging Face con -m/--model.")
+    else:
+        print("Modelos disponibles (OpenRouter):\n")
+        for alias, model_id in sorted(MODELS.items()):
+            default = " (por defecto)" if alias == DEFAULT_MODEL else ""
+            print(f"  {alias:<20} → {model_id}{default}")
+        print("\nTambién puedes pasar el ID completo de OpenRouter con -m/--model.")
 
 
 def main() -> None:
@@ -136,7 +150,7 @@ def main() -> None:
         return
 
     if args.list_models:
-        _print_models()
+        _print_models(hf=args.hf)
         return
 
     if not args.source:
@@ -152,8 +166,9 @@ def main() -> None:
         print("Usa --list-backends para ver los backends disponibles.")
         sys.exit(1)
 
+    provider = "hf" if args.hf else "openrouter"
     try:
-        model_id = resolve_model(args.model)
+        model_id = resolve_model(args.model, provider=provider)
     except ValueError as exc:
         print(f"[ERROR] {exc}")
         print("Usa --list-models para ver los alias disponibles.")
@@ -168,16 +183,33 @@ def main() -> None:
         sys.exit(1)
 
     load_env(ENV_PATH)
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        print("[ERROR] OPENROUTER_API_KEY no encontrada en .env")
-        sys.exit(1)
+    if args.hf:
+        api_key = os.getenv("HF_API_KEY")
+        if not api_key:
+            print("[ERROR] HF_API_KEY no encontrada en .env (necesaria con --hf)")
+            sys.exit(1)
+        api_url = HF_API_URL
+    else:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            print("[ERROR] OPENROUTER_API_KEY no encontrada en .env")
+            sys.exit(1)
+        api_url = API_URL
 
     thinking = args.thinking
+    if thinking and args.hf:
+        logger.warning(
+            "[AVISO] --thinking no está soportado por Hugging Face Inference API. "
+            "Se ignorará el flag de reasoning."
+        )
+        thinking = False
+
     extra_flags = parse_compile_flags(args.flags)
     translated_name = backend.translated_path(source_path).name
+    provider_label = "Hugging Face" if args.hf else "OpenRouter"
     logger.info("\n\nTraduciendo %s -> %s", source_path.name, translated_name)
     logger.info("  Backend:    %s", backend.name)
+    logger.info("  Proveedor:  %s", provider_label)
     logger.info("  Modelo:     %s", model_id)
     if thinking:
         effort = args.thinking_effort or "medium (por defecto)"
@@ -189,7 +221,7 @@ def main() -> None:
     if args.compare:
         logger.info("  Compare:    activado (verificación de checksums en bucle)")
     if args.debug:
-        logger.info("  Debug:      activado (respuesta completa de OpenRouter)")
+        logger.info("  Debug:      activado (respuesta completa de la API)")
     logger.info("\n")
 
     try:
@@ -198,6 +230,7 @@ def main() -> None:
             api_key,
             backend=backend,
             model=model_id,
+            api_url=api_url,
             thinking=thinking,
             thinking_effort=args.thinking_effort,
             extra_flags=extra_flags,
